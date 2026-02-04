@@ -1,6 +1,7 @@
 import requests
 import pandas as pd
 import time
+import os
 from datetime import datetime, timedelta
 
 # Configuration
@@ -95,7 +96,7 @@ def convert_multi_strike_to_dataframe(all_strikes_data, option_type):
             continue
         
         df = pd.DataFrame({
-            'timestamp': pd.to_datetime(options_data['timestamp'], unit='s'),
+            'timestamp': pd.to_datetime(options_data['timestamp'], unit='s', utc=True).tz_convert('Asia/Kolkata'),
             'open': options_data.get('open', []),
             'high': options_data.get('high', []),
             'low': options_data.get('low', []),
@@ -120,7 +121,7 @@ def convert_multi_strike_to_dataframe(all_strikes_data, option_type):
     return combined_df
 
 
-def backtest_strategy(df, quantity=1):
+def backtest_strategy(df, quantity=1, option_type=""):
     """
     Red Candle Strategy with 9:15 ATM strike lock:
     - At 9:15, identify ATM strike and lock it for the day
@@ -269,6 +270,9 @@ def backtest_strategy(df, quantity=1):
     print("\nDetailed Trades:")
     print(trades_df.to_string(index=False))
     
+    # Add option type column
+    trades_df['option_type'] = option_type
+    
     return {
         'total_trades': len(trades_df),
         'winning_trades': winning_trades,
@@ -289,6 +293,9 @@ def main():
     TO_DATE = "2026-02-03"
     QUANTITY = 1  # Number of lots
     STRIKE_RANGE = 10  # Fetch ATM-10 to ATM+10
+    
+    # Collect all trades from both CALL and PUT
+    all_trades = []
     
     # Backtest for both CALL and PUT
     for option_type in ["CALL", "PUT"]:
@@ -313,11 +320,37 @@ def main():
             print(f"Strike range: {df['strike'].min():.2f} to {df['strike'].max():.2f}")
             
             # Run backtest
-            results = backtest_strategy(df, quantity=QUANTITY)
+            results = backtest_strategy(df, quantity=QUANTITY, option_type=option_type)
+            
+            # Collect trades
+            if results.get('total_trades', 0) > 0:
+                all_trades.append(results['trades'])
         else:
             print(f"Failed to fetch data for {option_type}")
         
         print(f"\n{'#'*80}\n")
+    
+    # Merge and save all trades to a single CSV
+    if all_trades:
+        merged_trades = pd.concat(all_trades, ignore_index=True)
+        merged_trades = merged_trades.sort_values(['date', 'entry_time'])
+        
+        # Reorder columns to put option_type after date
+        columns = ['date', 'option_type', 'entry_time', 'entry_price', 'entry_strike', 
+                   'exit_time', 'exit_price', 'exit_strike', 'exit_reason', 'pnl']
+        merged_trades = merged_trades[columns]
+        
+        os.makedirs('trades', exist_ok=True)
+        timestamp_str = datetime.now().strftime('%Y-%m-%d %H_%M_%S')
+        csv_filename = f"trades/trades_{timestamp_str}.csv"
+        merged_trades.to_csv(csv_filename, index=False)
+        
+        print(f"\n{'='*80}")
+        print(f"All trades merged and saved to: {csv_filename}")
+        print(f"Total trades (CALL + PUT): {len(merged_trades)}")
+        print(f"{'='*80}\n")
+    else:
+        print("\nNo trades to save!")
 
 
 if __name__ == "__main__":
