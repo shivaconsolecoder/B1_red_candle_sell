@@ -6,7 +6,8 @@ from datetime import datetime, timedelta
 
 # Configuration
 ACCESS_TOKEN = "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzUxMiJ9.eyJpc3MiOiJkaGFuIiwicGFydG5lcklkIjoiIiwiZXhwIjoxNzcwMjY3ODM1LCJpYXQiOjE3NzAxODE0MzUsInRva2VuQ29uc3VtZXJUeXBlIjoiU0VMRiIsIndlYmhvb2tVcmwiOiIiLCJkaGFuQ2xpZW50SWQiOiIxMTA2ODczMzk4In0.Pe6jZUYyIuvzKLAmqz1Xk4F7_jdLJuJuJR9bp_tr5fdcH8yKcE0sb-EO91M3Q0oDdQnaZzcp0cdS6Ley4tQK9A"
-
+SENSEX = 51
+NIFTY_50 = 13
 
 class DhanAPI:
     def __init__(self, access_token):
@@ -17,13 +18,19 @@ class DhanAPI:
             'access-token': access_token
         }
 
-        self.SENSEX = 51
-        self.NIFTY_50 = 13
+      
     
     def get_options_data(self, strike, option_type, from_date, to_date,
-                        exchange_segment="BSE_FNO", interval=1, security_id="51",
+                        exchange_segment="NSE_FNO", interval=1, security_id=NIFTY_50,
                         instrument="OPTIDX", expiry_flag="WEEK", expiry_code=1, max_retries=3):
         """Fetch expired options data from Dhan API with retry logic"""
+        
+
+        # security_id = NIFTY_50
+        # exchange_segment = "NSE_FNO"
+
+        # security_id = self.SENSEX
+        # exchange_segment = "BSE_FNO"
         
         payload = {
             "exchangeSegment": exchange_segment,
@@ -310,7 +317,7 @@ def main():
     dhan = DhanAPI(ACCESS_TOKEN)
     
     # Strategy parameters
-    FROM_DATE = "2026-02-04"
+    FROM_DATE = "2026-01-01"
     TO_DATE = "2026-02-04"
     QUANTITY = 1  # Number of lots
     STRIKE_RANGE = 10  # Fetch ATM-10 to ATM+10
