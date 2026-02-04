@@ -1,5 +1,6 @@
 import requests
 import pandas as pd
+import time
 from datetime import datetime, timedelta
 
 # Configuration
@@ -17,8 +18,8 @@ class DhanAPI:
     
     def get_options_data(self, strike, option_type, from_date, to_date,
                         exchange_segment="NSE_FNO", interval=1, security_id="13",
-                        instrument="OPTIDX", expiry_flag="MONTH", expiry_code=1):
-        """Fetch expired options data from Dhan API"""
+                        instrument="OPTIDX", expiry_flag="MONTH", expiry_code=1, max_retries=3):
+        """Fetch expired options data from Dhan API with retry logic"""
         
         payload = {
             "exchangeSegment": exchange_segment,
@@ -34,57 +35,105 @@ class DhanAPI:
             "toDate": to_date
         }
         
-        try:
-            response = requests.post(f"{self.base_url}/charts/rollingoption", 
-                                    headers=self.headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-        except Exception as e:
-            print(f"API Error: {e}")
-            return None
-
-
-def convert_to_dataframe(api_response, option_type):
-    """Convert API response to pandas DataFrame for backtesting"""
+        for attempt in range(max_retries):
+            try:
+                response = requests.post(f"{self.base_url}/charts/rollingoption", 
+                                        headers=self.headers, json=payload)
+                response.raise_for_status()
+                return response.json()
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    print(f" (Error: {e}, retrying...)", end="", flush=True)
+                    time.sleep(1)
+                else:
+                    print(f" (Error: {e}, failed after {max_retries} attempts)")
+                    return None
+        
+        return None
     
-    if not api_response or 'data' not in api_response:
+    def get_all_strikes_data(self, option_type, from_date, to_date, strike_range=10):
+        """Fetch data for all strikes from ATM-range to ATM+range with rate limiting"""
+        
+        all_data = {}
+        strikes = ["ATM"] + [f"ATM+{i}" for i in range(1, strike_range + 1)] + [f"ATM-{i}" for i in range(1, strike_range + 1)]
+        
+        print(f"Fetching {option_type} data for strikes: {', '.join(strikes)}")
+        print(f"Rate limit: 10 requests/second (delay: 0.1s between requests)")
+        
+        for idx, strike in enumerate(strikes):
+            print(f"  [{idx+1}/{len(strikes)}] Fetching {strike}...", end="", flush=True)
+            data = self.get_options_data(strike, option_type, from_date, to_date)
+            if data:
+                all_data[strike] = data
+                print(" ✓")
+            else:
+                print(" ✗")
+            
+            # Rate limiting: 10 requests per second = 0.1 second delay between requests
+            if idx < len(strikes) - 1:  # Don't sleep after the last request
+                time.sleep(0.1)
+        
+        return all_data
+
+
+def convert_multi_strike_to_dataframe(all_strikes_data, option_type):
+    """Convert multi-strike API response to combined DataFrame"""
+    
+    if not all_strikes_data:
         return None
     
     data_key = 'ce' if option_type == 'CALL' else 'pe'
-    options_data = api_response['data'].get(data_key)
+    all_dfs = []
     
-    if not options_data or not options_data.get('timestamp'):
+    for strike_label, api_response in all_strikes_data.items():
+        if not api_response or 'data' not in api_response:
+            continue
+        
+        options_data = api_response['data'].get(data_key)
+        
+        if not options_data or not options_data.get('timestamp'):
+            continue
+        
+        df = pd.DataFrame({
+            'timestamp': pd.to_datetime(options_data['timestamp'], unit='s'),
+            'open': options_data.get('open', []),
+            'high': options_data.get('high', []),
+            'low': options_data.get('low', []),
+            'close': options_data.get('close', []),
+            'volume': options_data.get('volume', []),
+            'oi': options_data.get('oi', []),
+            'iv': options_data.get('iv', []),
+            'strike': options_data.get('strike', []),
+            'spot': options_data.get('spot', []),
+            'strike_label': strike_label  # ATM, ATM+1, etc.
+        })
+        
+        all_dfs.append(df)
+    
+    if not all_dfs:
         return None
     
-    df = pd.DataFrame({
-        'timestamp': pd.to_datetime(options_data['timestamp'], unit='s'),
-        'open': options_data.get('open', []),
-        'high': options_data.get('high', []),
-        'low': options_data.get('low', []),
-        'close': options_data.get('close', []),
-        'volume': options_data.get('volume', []),
-        'oi': options_data.get('oi', []),
-        'iv': options_data.get('iv', []),
-        'strike': options_data.get('strike', []),
-        'spot': options_data.get('spot', [])
-    })
+    # Combine all strikes data
+    combined_df = pd.concat(all_dfs, ignore_index=True)
+    combined_df.sort_values('timestamp', inplace=True)
     
-    df.set_index('timestamp', inplace=True)
-    return df
+    return combined_df
 
 
 def backtest_strategy(df, quantity=1):
     """
-    Red Candle Strategy:
-    - Sell on first red candle at 9:15 or later
+    Red Candle Strategy with 9:15 ATM strike lock:
+    - At 9:15, identify ATM strike and lock it for the day
+    - Track that specific strike throughout the day (it may move to ATM+1, ATM-1, etc.)
+    - Sell on first red candle
     - Exit when candle closes above entry close
     - Re-entry on candles closing below previous red-candle-close or new higher red candle
     - Final exit at 3:29 PM
     """
     
     # Add date and time columns
-    df['date'] = df.index.date
-    df['time'] = df.index.time
+    df['date'] = df['timestamp'].dt.date
+    df['time'] = df['timestamp'].dt.time
     
     # Trading state
     in_trade = False
@@ -95,13 +144,35 @@ def backtest_strategy(df, quantity=1):
     
     print(f"\n{'='*80}")
     print(f"Backtesting Red Candle Strategy")
-    print(f"Data: {df.index[0]} to {df.index[-1]}")
-    print(f"Total candles: {len(df)}")
+    print(f"Data: {df['timestamp'].min()} to {df['timestamp'].max()}")
+    print(f"Total rows: {len(df)}")
     print(f"{'='*80}\n")
     
     # Process each day separately
     for date in df['date'].unique():
         daily_df = df[df['date'] == date].copy()
+        
+        # Find 9:15 ATM strike for the day
+        morning_915 = daily_df[daily_df['time'] >= pd.Timestamp('09:15:00').time()]
+        if len(morning_915) == 0:
+            print(f"\n--- Trading Day: {date} --- No 9:15 data, skipping")
+            continue
+        
+        atm_at_915 = morning_915[morning_915['strike_label'] == 'ATM'].head(1)
+        if len(atm_at_915) == 0:
+            print(f"\n--- Trading Day: {date} --- No ATM data at 9:15, skipping")
+            continue
+        
+        locked_strike = atm_at_915.iloc[0]['strike']
+        print(f"\n--- Trading Day: {date} --- 9:15 ATM Strike: {locked_strike:.2f}")
+        
+        # Filter data for this specific strike value throughout the day
+        daily_strike_df = daily_df[daily_df['strike'] == locked_strike].copy()
+        daily_strike_df = daily_strike_df.sort_values('timestamp')
+        
+        if len(daily_strike_df) == 0:
+            print(f"  No data for strike {locked_strike:.2f}")
+            continue
         
         # Reset daily variables
         in_trade = False
@@ -110,10 +181,9 @@ def backtest_strategy(df, quantity=1):
         red_candle_close = 0
         entry_time = None
         
-        print(f"\n--- Trading Day: {date} ---")
-        
-        for i, (timestamp, row) in enumerate(daily_df.iterrows()):
-            current_time = timestamp.time()
+        for idx, row in daily_strike_df.iterrows():
+            current_time = row['time']
+            timestamp = row['timestamp']
             is_red_candle = row['close'] < row['open']
             
             # Check if it's past 3:29 PM - exit all trades
@@ -131,7 +201,7 @@ def backtest_strategy(df, quantity=1):
                         'exit_reason': 'EOD',
                         'pnl': pnl
                     })
-                    print(f"  {timestamp.time()} - EOD Exit @ {row['close']:.2f} | Strike: {row['strike']:.2f} | PnL: {pnl:.2f}")
+                    print(f"  {current_time} - EOD Exit @ {row['close']:.2f} | Strike: {row['strike']:.2f} | PnL: {pnl:.2f}")
                     in_trade = False
                 break
             
@@ -144,7 +214,7 @@ def backtest_strategy(df, quantity=1):
                     red_candle_close = row['close']
                     entry_time = timestamp
                     in_trade = True
-                    print(f"  {timestamp.time()} - ENTRY (Red Candle) @ {entry_price:.2f} | Strike: {entry_strike:.2f} | O:{row['open']:.2f} H:{row['high']:.2f} L:{row['low']:.2f}")
+                    print(f"  {current_time} - ENTRY (Red Candle) @ {entry_price:.2f} | Strike: {entry_strike:.2f} | O:{row['open']:.2f} H:{row['high']:.2f} L:{row['low']:.2f}")
             
             # Re-entry Logic: Candle closes below previous red-candle-close
             elif not in_trade and red_candle_close > 0:
@@ -153,7 +223,7 @@ def backtest_strategy(df, quantity=1):
                     entry_strike = row['strike']
                     entry_time = timestamp
                     in_trade = True
-                    print(f"  {timestamp.time()} - RE-ENTRY (Below Red Close) @ {entry_price:.2f} | Strike: {entry_strike:.2f}")
+                    print(f"  {current_time} - RE-ENTRY (Below Red Close) @ {entry_price:.2f} | Strike: {entry_strike:.2f}")
             
             # Exit Logic: Candle closes above entry price
             if in_trade and row['close'] > entry_price:
@@ -169,7 +239,7 @@ def backtest_strategy(df, quantity=1):
                     'exit_reason': 'Stop Loss',
                     'pnl': pnl
                 })
-                print(f"  {timestamp.time()} - EXIT (SL Hit) @ {row['close']:.2f} | Strike: {row['strike']:.2f} | PnL: {pnl:.2f}")
+                print(f"  {current_time} - EXIT (SL Hit) @ {row['close']:.2f} | Strike: {row['strike']:.2f} | PnL: {pnl:.2f}")
                 in_trade = False
     
     # Calculate results
@@ -215,30 +285,39 @@ def main():
     dhan = DhanAPI(ACCESS_TOKEN)
     
     # Strategy parameters
-    STRIKE = "ATM"  # At-the-money strike
-    OPTION_TYPE = "CALL"  # or "PUT"
     FROM_DATE = "2026-02-03"
     TO_DATE = "2026-02-03"
     QUANTITY = 1  # Number of lots
+    STRIKE_RANGE = 10  # Fetch ATM-10 to ATM+10
     
-    print(f"\nFetching {STRIKE} {OPTION_TYPE} options data from {FROM_DATE} to {TO_DATE}...")
-    
-    # Fetch data
-    raw_data = dhan.get_options_data(
-        strike=STRIKE,
-        option_type=OPTION_TYPE,
-        from_date=FROM_DATE,
-        to_date=TO_DATE
-    )
-    
-    # Convert to DataFrame
-    df = convert_to_dataframe(raw_data, OPTION_TYPE)
-    
-    if df is not None:
-        # Run backtest
-        results = backtest_strategy(df, quantity=QUANTITY)
-    else:
-        print("Failed to fetch data")
+    # Backtest for both CALL and PUT
+    for option_type in ["CALL", "PUT"]:
+        print(f"\n{'#'*80}")
+        print(f"# BACKTESTING {option_type} OPTIONS")
+        print(f"{'#'*80}\n")
+        
+        # Fetch data for all strikes
+        all_strikes_data = dhan.get_all_strikes_data(
+            option_type=option_type,
+            from_date=FROM_DATE,
+            to_date=TO_DATE,
+            strike_range=STRIKE_RANGE
+        )
+        
+        # Convert to DataFrame
+        df = convert_multi_strike_to_dataframe(all_strikes_data, option_type)
+        
+        if df is not None and len(df) > 0:
+            print(f"\nTotal data points: {len(df)}")
+            print(f"Unique strikes: {df['strike'].nunique()}")
+            print(f"Strike range: {df['strike'].min():.2f} to {df['strike'].max():.2f}")
+            
+            # Run backtest
+            results = backtest_strategy(df, quantity=QUANTITY)
+        else:
+            print(f"Failed to fetch data for {option_type}")
+        
+        print(f"\n{'#'*80}\n")
 
 
 if __name__ == "__main__":
