@@ -73,28 +73,132 @@ def convert_to_dataframe(api_response, option_type):
     return df
 
 
-def backtest_strategy(df):
+def backtest_strategy(df, quantity=1):
     """
-    Implement your backtesting strategy here
-    
-    Args:
-        df: DataFrame with OHLC, volume, oi, iv, strike, spot data
-    
-    Returns:
-        dict: Backtest results
+    Red Candle Strategy:
+    - Sell on first red candle at 9:15 or later
+    - Exit when candle closes above entry close
+    - Re-entry on candles closing below previous red-candle-close or new higher red candle
+    - Final exit at 3:29 PM
     """
     
-    # Example: Simple strategy placeholder
-    # TODO: Implement your strategy logic here
+    # Add date and time columns
+    df['date'] = df.index.date
+    df['time'] = df.index.time
     
-    print(f"Data shape: {df.shape}")
-    print(f"Date range: {df.index[0]} to {df.index[-1]}")
-    print(f"\nFirst few rows:\n{df.head()}")
-    print(f"\nData summary:\n{df.describe()}")
+    # Trading state
+    in_trade = False
+    entry_price = 0
+    red_candle_close = 0
+    trades = []
+    
+    print(f"\n{'='*80}")
+    print(f"Backtesting Red Candle Strategy")
+    print(f"Data: {df.index[0]} to {df.index[-1]}")
+    print(f"Total candles: {len(df)}")
+    print(f"{'='*80}\n")
+    
+    # Process each day separately
+    for date in df['date'].unique():
+        daily_df = df[df['date'] == date].copy()
+        
+        # Reset daily variables
+        in_trade = False
+        entry_price = 0
+        red_candle_close = 0
+        entry_time = None
+        
+        print(f"\n--- Trading Day: {date} ---")
+        
+        for i, (timestamp, row) in enumerate(daily_df.iterrows()):
+            current_time = timestamp.time()
+            is_red_candle = row['close'] < row['open']
+            
+            # Check if it's past 3:29 PM - exit all trades
+            if current_time >= pd.Timestamp('15:29:00').time():
+                if in_trade:
+                    pnl = (entry_price - row['close']) * quantity
+                    trades.append({
+                        'date': date,
+                        'entry_time': entry_time,
+                        'entry_price': entry_price,
+                        'exit_time': timestamp,
+                        'exit_price': row['close'],
+                        'exit_reason': 'EOD',
+                        'pnl': pnl
+                    })
+                    print(f"  {timestamp.time()} - EOD Exit @ {row['close']:.2f} | PnL: {pnl:.2f}")
+                    in_trade = False
+                break
+            
+            # Entry Logic: First red candle (9:15 or later)
+            if not in_trade and is_red_candle:
+                # Check if this is a new higher red candle or first entry
+                if red_candle_close == 0 or row['close'] > red_candle_close:
+                    entry_price = row['close']
+                    red_candle_close = row['close']
+                    entry_time = timestamp
+                    in_trade = True
+                    print(f"  {timestamp.time()} - ENTRY (Red Candle) @ {entry_price:.2f} | O:{row['open']:.2f} H:{row['high']:.2f} L:{row['low']:.2f}")
+            
+            # Re-entry Logic: Candle closes below previous red-candle-close
+            elif not in_trade and red_candle_close > 0:
+                if row['close'] < red_candle_close:
+                    entry_price = row['close']
+                    entry_time = timestamp
+                    in_trade = True
+                    print(f"  {timestamp.time()} - RE-ENTRY (Below Red Close) @ {entry_price:.2f}")
+            
+            # Exit Logic: Candle closes above entry price
+            if in_trade and row['close'] > entry_price:
+                pnl = (entry_price - row['close']) * quantity
+                trades.append({
+                    'date': date,
+                    'entry_time': entry_time,
+                    'entry_price': entry_price,
+                    'exit_time': timestamp,
+                    'exit_price': row['close'],
+                    'exit_reason': 'Stop Loss',
+                    'pnl': pnl
+                })
+                print(f"  {timestamp.time()} - EXIT (SL Hit) @ {row['close']:.2f} | PnL: {pnl:.2f}")
+                in_trade = False
+    
+    # Calculate results
+    if not trades:
+        print("\nNo trades executed!")
+        return {'total_trades': 0, 'total_pnl': 0}
+    
+    trades_df = pd.DataFrame(trades)
+    total_pnl = trades_df['pnl'].sum()
+    winning_trades = len(trades_df[trades_df['pnl'] > 0])
+    losing_trades = len(trades_df[trades_df['pnl'] <= 0])
+    win_rate = (winning_trades / len(trades_df) * 100) if len(trades_df) > 0 else 0
+    
+    print(f"\n{'='*80}")
+    print(f"BACKTEST RESULTS")
+    print(f"{'='*80}")
+    print(f"Total Trades: {len(trades_df)}")
+    print(f"Winning Trades: {winning_trades}")
+    print(f"Losing Trades: {losing_trades}")
+    print(f"Win Rate: {win_rate:.2f}%")
+    print(f"Total PnL: {total_pnl:.2f}")
+    print(f"Average PnL per Trade: {trades_df['pnl'].mean():.2f}")
+    print(f"Max Profit: {trades_df['pnl'].max():.2f}")
+    print(f"Max Loss: {trades_df['pnl'].min():.2f}")
+    print(f"{'='*80}\n")
+    
+    print("\nDetailed Trades:")
+    print(trades_df.to_string(index=False))
     
     return {
-        'total_candles': len(df),
-        'date_range': (df.index[0], df.index[-1])
+        'total_trades': len(trades_df),
+        'winning_trades': winning_trades,
+        'losing_trades': losing_trades,
+        'win_rate': win_rate,
+        'total_pnl': total_pnl,
+        'avg_pnl': trades_df['pnl'].mean(),
+        'trades': trades_df
     }
 
 
@@ -102,22 +206,29 @@ def main():
     # Initialize API
     dhan = DhanAPI(ACCESS_TOKEN)
     
+    # Strategy parameters
+    STRIKE = "ATM"  # At-the-money strike
+    OPTION_TYPE = "CALL"  # or "PUT"
+    FROM_DATE = "2026-02-03"
+    TO_DATE = "2026-02-03"
+    QUANTITY = 1  # Number of lots
+    
+    print(f"\nFetching {STRIKE} {OPTION_TYPE} options data from {FROM_DATE} to {TO_DATE}...")
+    
     # Fetch data
-    print("Fetching options data...")
     raw_data = dhan.get_options_data(
-        strike="ATM",
-        option_type="CALL",
-        from_date="2024-01-01",
-        to_date="2024-02-01"
+        strike=STRIKE,
+        option_type=OPTION_TYPE,
+        from_date=FROM_DATE,
+        to_date=TO_DATE
     )
     
     # Convert to DataFrame
-    df = convert_to_dataframe(raw_data, "CALL")
+    df = convert_to_dataframe(raw_data, OPTION_TYPE)
     
     if df is not None:
         # Run backtest
-        results = backtest_strategy(df)
-        print(f"\nBacktest Results: {results}")
+        results = backtest_strategy(df, quantity=QUANTITY)
     else:
         print("Failed to fetch data")
 
