@@ -16,10 +16,13 @@ class DhanAPI:
             'Content-Type': 'application/json',
             'access-token': access_token
         }
+
+        self.SENSEX = 51
+        self.NIFTY_50 = 13
     
     def get_options_data(self, strike, option_type, from_date, to_date,
-                        exchange_segment="NSE_FNO", interval=1, security_id="13",
-                        instrument="OPTIDX", expiry_flag="MONTH", expiry_code=1, max_retries=3):
+                        exchange_segment="BSE_FNO", interval=1, security_id="51",
+                        instrument="OPTIDX", expiry_flag="WEEK", expiry_code=1, max_retries=3):
         """Fetch expired options data from Dhan API with retry logic"""
         
         payload = {
@@ -70,9 +73,9 @@ class DhanAPI:
             else:
                 print(" ✗")
             
-            # Rate limiting: 10 requests per second = 0.1 second delay between requests
-            if idx < len(strikes) - 1:  # Don't sleep after the last request
-                time.sleep(0.1)
+            # # Rate limiting: 10 requests per second = 0.1 second delay between requests
+            # if idx < len(strikes) - 1:  # Don't sleep after the last request
+            #     time.sleep(0.1)
         
         return all_data
 
@@ -140,6 +143,7 @@ def backtest_strategy(df, quantity=1, option_type=""):
     in_trade = False
     entry_price = 0
     entry_strike = 0
+    entry_spot = 0
     red_candle_close = 0
     trades = []
     
@@ -179,6 +183,7 @@ def backtest_strategy(df, quantity=1, option_type=""):
         in_trade = False
         entry_price = 0
         entry_strike = 0
+        entry_spot = 0
         red_candle_close = 0
         entry_time = None
         
@@ -196,13 +201,15 @@ def backtest_strategy(df, quantity=1, option_type=""):
                         'entry_time': entry_time,
                         'entry_price': entry_price,
                         'entry_strike': entry_strike,
+                        'entry_spot': entry_spot,
                         'exit_time': timestamp,
                         'exit_price': row['close'],
                         'exit_strike': row['strike'],
+                        'exit_spot': row['spot'],
                         'exit_reason': 'EOD',
                         'pnl': pnl
                     })
-                    print(f"  {current_time} - EOD Exit @ {row['close']:.2f} | Strike: {row['strike']:.2f} | PnL: {pnl:.2f}")
+                    print(f"  {current_time} - EOD Exit @ {row['close']:.2f} | Strike: {row['strike']:.2f} | Spot: {row['spot']:.2f} | PnL: {pnl:.2f}")
                     in_trade = False
                 break
             
@@ -212,19 +219,21 @@ def backtest_strategy(df, quantity=1, option_type=""):
                 if red_candle_close == 0 or row['close'] > red_candle_close:
                     entry_price = row['close']
                     entry_strike = row['strike']
+                    entry_spot = row['spot']
                     red_candle_close = row['close']
                     entry_time = timestamp
                     in_trade = True
-                    print(f"  {current_time} - ENTRY (Red Candle) @ {entry_price:.2f} | Strike: {entry_strike:.2f} | O:{row['open']:.2f} H:{row['high']:.2f} L:{row['low']:.2f}")
+                    print(f"  {current_time} - ENTRY (Red Candle) @ {entry_price:.2f} | Strike: {entry_strike:.2f} | Spot: {entry_spot:.2f} | O:{row['open']:.2f} H:{row['high']:.2f} L:{row['low']:.2f}")
             
             # Re-entry Logic: Candle closes below previous red-candle-close
             elif not in_trade and red_candle_close > 0:
                 if row['close'] < red_candle_close:
                     entry_price = row['close']
                     entry_strike = row['strike']
+                    entry_spot = row['spot']
                     entry_time = timestamp
                     in_trade = True
-                    print(f"  {current_time} - RE-ENTRY (Below Red Close) @ {entry_price:.2f} | Strike: {entry_strike:.2f}")
+                    print(f"  {current_time} - RE-ENTRY (Below Red Close) @ {entry_price:.2f} | Strike: {entry_strike:.2f} | Spot: {entry_spot:.2f}")
             
             # Exit Logic: Candle closes above entry price
             if in_trade and row['close'] > entry_price:
@@ -234,13 +243,15 @@ def backtest_strategy(df, quantity=1, option_type=""):
                     'entry_time': entry_time,
                     'entry_price': entry_price,
                     'entry_strike': entry_strike,
+                    'entry_spot': entry_spot,
                     'exit_time': timestamp,
                     'exit_price': row['close'],
                     'exit_strike': row['strike'],
+                    'exit_spot': row['spot'],
                     'exit_reason': 'Stop Loss',
                     'pnl': pnl
                 })
-                print(f"  {current_time} - EXIT (SL Hit) @ {row['close']:.2f} | Strike: {row['strike']:.2f} | PnL: {pnl:.2f}")
+                print(f"  {current_time} - EXIT (SL Hit) @ {row['close']:.2f} | Strike: {row['strike']:.2f} | Spot: {row['spot']:.2f} | PnL: {pnl:.2f}")
                 in_trade = False
     
     # Calculate results
@@ -336,8 +347,8 @@ def main():
         merged_trades = merged_trades.sort_values(['date', 'entry_time'])
         
         # Reorder columns to put option_type after date
-        columns = ['date', 'option_type', 'entry_time', 'entry_price', 'entry_strike', 
-                   'exit_time', 'exit_price', 'exit_strike', 'exit_reason', 'pnl']
+        columns = ['date', 'option_type', 'entry_time', 'entry_price', 'entry_strike', 'entry_spot',
+                   'exit_time', 'exit_price', 'exit_strike', 'exit_spot', 'exit_reason', 'pnl']
         merged_trades = merged_trades[columns]
         
         os.makedirs('trades', exist_ok=True)
