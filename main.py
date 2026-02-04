@@ -213,30 +213,40 @@ def backtest_strategy(df, quantity=1, option_type=""):
                     in_trade = False
                 break
             
-            # Entry Logic: First red candle (9:15 or later)
-            if not in_trade and is_red_candle:
+            # Entry Logic: First first red candle
+            if not in_trade and is_red_candle and red_candle_close == 0:
                 # Check if this is a new higher red candle or first entry
-                if red_candle_close == 0 or row['close'] > red_candle_close:
                     entry_price = row['close']
                     entry_strike = row['strike']
                     entry_spot = row['spot']
                     red_candle_close = row['close']
                     entry_time = timestamp
                     in_trade = True
-                    print(f"  {current_time} - ENTRY (Red Candle) @ {entry_price:.2f} | Strike: {entry_strike:.2f} | Spot: {entry_spot:.2f} | O:{row['open']:.2f} H:{row['high']:.2f} L:{row['low']:.2f}")
+                    print(f"  {current_time} - ENTRY (FIRST Red Candle) @ {entry_price:.2f} | Strike: {entry_strike:.2f} | Spot: {entry_spot:.2f} | O:{row['open']:.2f} H:{row['high']:.2f} L:{row['low']:.2f}")
             
-            # Re-entry Logic: Candle closes below previous red-candle-close
-            elif not in_trade and red_candle_close > 0:
-                if row['close'] < red_candle_close:
+            # Re-entry Logic: RED Candle closes above previous red-candle-close
+            elif not in_trade and is_red_candle and red_candle_close > 0 and row['close'] > red_candle_close:
+                if True:
+                    entry_price = row['close']
+                    entry_strike = row['strike']
+                    entry_spot = row['spot']
+                    red_candle_close = row['close']
+                    entry_time = timestamp
+                    in_trade = True
+                    print(f"  {current_time} - RE-ENTRY (HIGH Red Close : {row['close']}) @ {entry_price:.2f} | Strike: {entry_strike:.2f} | Spot: {entry_spot:.2f}")
+            
+            # Re-entry Logic: ANY Candle closes below previous red-candle-close
+            elif not in_trade and red_candle_close > 0 and row['close'] < red_candle_close:
+                if True: # any candle closing below previous red candle close
                     entry_price = row['close']
                     entry_strike = row['strike']
                     entry_spot = row['spot']
                     entry_time = timestamp
                     in_trade = True
-                    print(f"  {current_time} - RE-ENTRY (Below Red Close) @ {entry_price:.2f} | Strike: {entry_strike:.2f} | Spot: {entry_spot:.2f}")
+                    print(f"  {current_time} - RE-ENTRY (Below Red Close : {red_candle_close}) @ {entry_price:.2f} | Strike: {entry_strike:.2f} | Spot: {entry_spot:.2f}")
             
             # Exit Logic: Candle closes above entry price
-            if in_trade and row['close'] > entry_price:
+            if in_trade and row['close'] > red_candle_close:
                 pnl = (entry_price - row['close']) * quantity
                 trades.append({
                     'date': date,
@@ -300,8 +310,8 @@ def main():
     dhan = DhanAPI(ACCESS_TOKEN)
     
     # Strategy parameters
-    FROM_DATE = "2026-02-03"
-    TO_DATE = "2026-02-03"
+    FROM_DATE = "2026-02-04"
+    TO_DATE = "2026-02-04"
     QUANTITY = 1  # Number of lots
     STRIKE_RANGE = 10  # Fetch ATM-10 to ATM+10
     
