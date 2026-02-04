@@ -89,6 +89,7 @@ def backtest_strategy(df, quantity=1):
     # Trading state
     in_trade = False
     entry_price = 0
+    entry_strike = 0
     red_candle_close = 0
     trades = []
     
@@ -105,6 +106,7 @@ def backtest_strategy(df, quantity=1):
         # Reset daily variables
         in_trade = False
         entry_price = 0
+        entry_strike = 0
         red_candle_close = 0
         entry_time = None
         
@@ -122,12 +124,14 @@ def backtest_strategy(df, quantity=1):
                         'date': date,
                         'entry_time': entry_time,
                         'entry_price': entry_price,
+                        'entry_strike': entry_strike,
                         'exit_time': timestamp,
                         'exit_price': row['close'],
+                        'exit_strike': row['strike'],
                         'exit_reason': 'EOD',
                         'pnl': pnl
                     })
-                    print(f"  {timestamp.time()} - EOD Exit @ {row['close']:.2f} | PnL: {pnl:.2f}")
+                    print(f"  {timestamp.time()} - EOD Exit @ {row['close']:.2f} | Strike: {row['strike']:.2f} | PnL: {pnl:.2f}")
                     in_trade = False
                 break
             
@@ -136,18 +140,20 @@ def backtest_strategy(df, quantity=1):
                 # Check if this is a new higher red candle or first entry
                 if red_candle_close == 0 or row['close'] > red_candle_close:
                     entry_price = row['close']
+                    entry_strike = row['strike']
                     red_candle_close = row['close']
                     entry_time = timestamp
                     in_trade = True
-                    print(f"  {timestamp.time()} - ENTRY (Red Candle) @ {entry_price:.2f} | O:{row['open']:.2f} H:{row['high']:.2f} L:{row['low']:.2f}")
+                    print(f"  {timestamp.time()} - ENTRY (Red Candle) @ {entry_price:.2f} | Strike: {entry_strike:.2f} | O:{row['open']:.2f} H:{row['high']:.2f} L:{row['low']:.2f}")
             
             # Re-entry Logic: Candle closes below previous red-candle-close
             elif not in_trade and red_candle_close > 0:
                 if row['close'] < red_candle_close:
                     entry_price = row['close']
+                    entry_strike = row['strike']
                     entry_time = timestamp
                     in_trade = True
-                    print(f"  {timestamp.time()} - RE-ENTRY (Below Red Close) @ {entry_price:.2f}")
+                    print(f"  {timestamp.time()} - RE-ENTRY (Below Red Close) @ {entry_price:.2f} | Strike: {entry_strike:.2f}")
             
             # Exit Logic: Candle closes above entry price
             if in_trade and row['close'] > entry_price:
@@ -156,12 +162,14 @@ def backtest_strategy(df, quantity=1):
                     'date': date,
                     'entry_time': entry_time,
                     'entry_price': entry_price,
+                    'entry_strike': entry_strike,
                     'exit_time': timestamp,
                     'exit_price': row['close'],
+                    'exit_strike': row['strike'],
                     'exit_reason': 'Stop Loss',
                     'pnl': pnl
                 })
-                print(f"  {timestamp.time()} - EXIT (SL Hit) @ {row['close']:.2f} | PnL: {pnl:.2f}")
+                print(f"  {timestamp.time()} - EXIT (SL Hit) @ {row['close']:.2f} | Strike: {row['strike']:.2f} | PnL: {pnl:.2f}")
                 in_trade = False
     
     # Calculate results
