@@ -151,6 +151,8 @@ def backtest_strategy(df, quantity=1, option_type=""):
     entry_strike = 0
     entry_spot = 0
     entry_low = 0
+    entry_high = 0
+    target_price = 0
     green_candle_low = float('inf')  # Track lowest green candle
     trades = []
     
@@ -192,6 +194,8 @@ def backtest_strategy(df, quantity=1, option_type=""):
         entry_strike = 0
         entry_spot = 0
         entry_low = 0
+        entry_high = 0
+        target_price = 0
         green_candle_low = float('inf')
         entry_time = None
         
@@ -227,13 +231,36 @@ def backtest_strategy(df, quantity=1, option_type=""):
                 entry_strike = row['strike']
                 entry_spot = row['spot']
                 entry_low = row['low']
+                entry_high = row['high']
                 green_candle_low = row['low']
                 entry_time = timestamp
+                # Calculate 4x target based on candle height
+                candle_height = entry_high - entry_low
+                target_price = float(entry_price * 1.1)
                 in_trade = True
-                print(f"  {current_time} - ENTRY (Green at Low) @ {entry_price:.2f} | Low: {entry_low:.2f} | Strike: {entry_strike:.2f} | Spot: {entry_spot:.2f}")
+                print(f"  {current_time} - ENTRY (Green at Low) @ {entry_price:.2f} | Low: {entry_low:.2f} | High: {entry_high:.2f} | Target: {target_price:.2f} | Strike: {entry_strike:.2f} | Spot: {entry_spot:.2f}")
             
-            # Exit Logic: Any candle closes below entry-candle-low
-            if in_trade and row['close'] < entry_low:
+            # Exit Logic: Target hit - price reaches 4x candle height
+            if in_trade and row['close'] >= target_price:
+                pnl = (row['close'] - entry_price) * quantity  # BUY strategy
+                trades.append({
+                    'date': date,
+                    'entry_time': entry_time,
+                    'entry_price': entry_price,
+                    'entry_strike': entry_strike,
+                    'entry_spot': entry_spot,
+                    'exit_time': timestamp,
+                    'exit_price': row['close'],
+                    'exit_strike': row['strike'],
+                    'exit_spot': row['spot'],
+                    'exit_reason': 'Target Hit',
+                    'pnl': pnl
+                })
+                print(f"  {current_time} - EXIT (Target Hit {target_price:.2f}) @ {row['close']:.2f} | Strike: {row['strike']:.2f} | Spot: {row['spot']:.2f} | PnL: {pnl:.2f}")
+                in_trade = False
+            
+            # Exit Logic: Stop Loss - Any candle closes below entry-candle-low
+            elif in_trade and row['close'] < entry_low:
                 pnl = (row['close'] - entry_price) * quantity  # BUY strategy
                 trades.append({
                     'date': date,
